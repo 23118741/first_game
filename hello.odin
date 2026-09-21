@@ -2,6 +2,10 @@
 package game
 
 import rl "vendor:raylib"
+import "core:mem"
+import "core:fmt"
+import "core:encoding/json"
+import "core:os"
 
 Animation_Name :: enum {
 	Idle, 
@@ -71,6 +75,20 @@ platform_collider :: proc(pos: rl.Vector2) -> rl.Rectangle {
 }
 
 main :: proc() {
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	context.allocator = mem.tracking_allocator(&track)
+
+	defer {
+		for _, entry in track.allocation_map {
+			fmt.eprintf("%v leaked %v bytes\n", entry.location, entry.size)
+		}
+		for entry in track.bad_free_array {
+			fmt.eprintf("%v bad free\n", entry.location)
+		}
+		mem.tracking_allocator_destroy(&track)
+	}
+	
 	rl.InitWindow(1280,720, "first game")
 	rl.SetWindowPosition(200, 200)
 	rl.SetWindowState({.WINDOW_RESIZABLE})
@@ -97,12 +115,14 @@ main :: proc() {
 	current_anim := player_run
 
 
-	level := Level {
-		platforms = {
-			{-20, 20},
-			{90, -10},
-			{90, -50},
-		},
+	level: Level
+
+	if level_data, err := os.read_entire_file("level.json", context.temp_allocator); err == nil{
+		if json.unmarshal(level_data, &level) != nil {
+			append(&level.platforms, rl.Vector2 {-20, 20})
+		}
+	} else{
+		append(&level.platforms, rl.Vector2 { -20, 20})
 	}
 	
 	platform_texture := rl.LoadTexture("platform.png")
@@ -181,9 +201,30 @@ main :: proc() {
 			mp := rl.GetScreenToWorld2D(rl.GetMousePosition(), camera)
 
 			rl.DrawTextureV(platform_texture, mp, rl.WHITE)
+
+			if rl.IsMouseButtonPressed(.LEFT){
+				append(&level.platforms, mp)
+			}
+
+			if rl.IsMouseButtonPressed(.RIGHT){
+				for p, idx in level.platforms {
+					if rl.CheckCollisionPointRec(mp, platform_collider(p)){
+						unordered_remove(&level.platforms, idx)
+						break
+					}
+				}
+			}
 		}
 		
 		rl.EndMode2D()
 		rl.EndDrawing()
 	}
+	rl.CloseWindow()
+
+	if level_data, err := json.marshal(level, allocator = context.temp_allocator); err == nil {
+		_ = os.write_entire_file("level.json", level_data)
+	}
+	
+	free_all(context.temp_allocator)
+	delete(level.platforms)
 }
